@@ -8,6 +8,7 @@ import {
   PlanLimitError,
 } from '../lib/plan-guard.js';
 import supabaseAdmin from '../config/supabase.js';
+import { selectInChunks } from '../lib/chunked-in.js';
 import { assertBrandAccess, assertPromptAccess } from '../lib/access.js';
 import { extractIntentKeywords } from '../lib/intent-extraction.js';
 import {
@@ -421,6 +422,7 @@ router.get('/brand/:brandId', async (req, res) => {
       .eq('brand_id', brandId);
 
     if (psError) {
+      req.log.error({ err: psError, brandId }, 'fetch prompt sets error');
       return res.status(500).json({
         error: 'Failed to fetch prompt sets',
         details: psError.message,
@@ -439,6 +441,7 @@ router.get('/brand/:brandId', async (req, res) => {
       .in('prompt_set_id', setIds);
 
     if (pError) {
+      req.log.error({ err: pError, brandId }, 'fetch prompts error');
       return res.status(500).json({ error: 'Failed to fetch prompts', details: pError.message });
     }
 
@@ -448,15 +451,23 @@ router.get('/brand/:brandId', async (req, res) => {
 
     const promptIds = prompts.map((p) => p.id);
 
-    const { data: volumes, error: vError } = await supabaseAdmin
-      .from('prompt_volumes')
-      .select('*')
-      .in('prompt_id', promptIds)
-      .order('est_ai_volume', { ascending: false });
+    // Chunked because this is the one filter that scales with the brand: the
+    // largest brand's 402 prompts made a 15,792-character URL that the edge
+    // rejected about a quarter of the time, and the page lost its volume and
+    // competition columns whenever it did (see lib/chunked-in.js).
+    const { data: volumes, error: vError } = await selectInChunks(promptIds, (chunk) =>
+      supabaseAdmin.from('prompt_volumes').select('*').in('prompt_id', chunk),
+    );
 
     if (vError) {
+      req.log.error({ err: vError, brandId, promptCount: promptIds.length }, 'fetch volumes error');
       return res.status(500).json({ error: 'Failed to fetch volumes', details: vError.message });
     }
+
+    // Ordering moved off the query now that rows arrive per chunk.
+    // `est_ai_volume` is NOT NULL, so this reproduces the previous
+    // `.order('est_ai_volume', { ascending: false })` exactly.
+    volumes.sort((a, b) => b.est_ai_volume - a.est_ai_volume);
 
     const promptMap = {};
     for (const p of prompts) {
