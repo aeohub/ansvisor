@@ -1,5 +1,6 @@
 import supabaseAdmin from '../../config/supabase.js';
 import { computeAiVisibilityScore } from '../../config/visibility-score.js';
+import { chunkIds, selectInChunks } from '../chunked-in.js';
 import { logger } from '../logger.js';
 
 /**
@@ -203,18 +204,26 @@ async function brandPrompts(brandId) {
 async function firstTimeCitations(promptById, from) {
   const promptIds = [...promptById.keys()];
   if (!promptIds.length) return [];
-  const { data } = await supabaseAdmin
-    .from('prompt_target_urls')
-    .select('url, label, prompt_id, first_cited_at')
-    .in('prompt_id', promptIds)
-    .gte('first_cited_at', from.toISOString())
-    .order('first_cited_at', { ascending: false })
-    .limit(5);
-  return (data ?? []).map((row) => ({
-    url: row.url,
-    label: row.label,
-    promptText: promptById.get(row.prompt_id)?.text ?? '',
-  }));
+  const { data } = await selectInChunks(promptIds, (chunk) =>
+    supabaseAdmin
+      .from('prompt_target_urls')
+      .select('url, label, prompt_id, first_cited_at')
+      .in('prompt_id', chunk)
+      .gte('first_cited_at', from.toISOString())
+      .order('first_cited_at', { ascending: false })
+      .limit(5),
+  );
+  // Each chunk brings back its own five, so the global five is taken here —
+  // the `.limit(5)` above only narrows what each request has to carry.
+  return (data ?? [])
+    .slice()
+    .sort((a, b) => String(b.first_cited_at).localeCompare(String(a.first_cited_at)))
+    .slice(0, 5)
+    .map((row) => ({
+      url: row.url,
+      label: row.label,
+      promptText: promptById.get(row.prompt_id)?.text ?? '',
+    }));
 }
 
 /** Platforms where the brand became visible for the first time ever. */
@@ -251,30 +260,38 @@ async function newEngineAppearances(brandId, from) {
 async function lostCitationPrompts(brandId, promptById, now) {
   const promptIds = [...promptById.keys()];
   if (!promptIds.length) return [];
-  const { data: volumes } = await supabaseAdmin
-    .from('prompt_volumes')
-    .select('prompt_id')
-    .in('prompt_id', promptIds)
-    .gt('est_ai_volume', 0);
+  const { data: volumes } = await selectInChunks(promptIds, (chunk) =>
+    supabaseAdmin
+      .from('prompt_volumes')
+      .select('prompt_id')
+      .in('prompt_id', chunk)
+      .gt('est_ai_volume', 0),
+  );
   const volumeIds = (volumes ?? []).map((v) => v.prompt_id);
   if (!volumeIds.length) return [];
 
   const since = new Date(now.getTime() - 14 * DAY_MS).toISOString();
   const PAGE = 1000;
   const rows = [];
-  for (let pageStart = 0; pageStart < 20000; pageStart += PAGE) {
-    const { data: page, error } = await supabaseAdmin
-      .from('prompt_results')
-      .select('prompt_id, citation_count, created_at')
-      .eq('brand_id', brandId)
-      .neq('platform', 'chatgpt-shopping')
-      .in('prompt_id', volumeIds)
-      .gte('created_at', since)
-      .order('created_at', { ascending: true })
-      .range(pageStart, pageStart + PAGE - 1);
-    if (error) throw new Error(`lost-citations scan failed: ${error.message}`);
-    rows.push(...(page ?? []));
-    if (!page || page.length < PAGE) break;
+  // Paging runs inside each id chunk rather than across the whole list: the
+  // id filter has to stay a manageable URL (see lib/chunked-in.js), and the
+  // day-bucketing below is order-independent, so scanning brand by chunk
+  // instead of strictly by date changes nothing downstream.
+  for (const idChunk of chunkIds(volumeIds)) {
+    for (let pageStart = 0; pageStart < 20000; pageStart += PAGE) {
+      const { data: page, error } = await supabaseAdmin
+        .from('prompt_results')
+        .select('prompt_id, citation_count, created_at')
+        .eq('brand_id', brandId)
+        .neq('platform', 'chatgpt-shopping')
+        .in('prompt_id', idChunk)
+        .gte('created_at', since)
+        .order('created_at', { ascending: true })
+        .range(pageStart, pageStart + PAGE - 1);
+      if (error) throw new Error(`lost-citations scan failed: ${error.message}`);
+      rows.push(...(page ?? []));
+      if (!page || page.length < PAGE) break;
+    }
   }
 
   const byPrompt = new Map();

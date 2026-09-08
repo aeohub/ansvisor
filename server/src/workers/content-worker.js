@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { resolveModel } from '../lib/ai-provider.js';
 import { getLanguageName } from '../lib/languages.js';
 import supabaseAdmin from '../config/supabase.js';
+import { selectInChunks } from '../lib/chunked-in.js';
 import logger from '../lib/logger.js';
 import { OPPORTUNITIES_PER_RUN, OPPORTUNITY_COUNT_RULE } from '../lib/opportunity-limits.js';
 
@@ -122,15 +123,23 @@ export async function processContentJob({ brandId, model, job }) {
 
   const promptIds = prompts.map((p) => p.id);
 
+  // Chunked for the same reason as the volumes route: hundreds of prompt
+  // uuids in one query string is the request size the edge starts rejecting
+  // (see lib/chunked-in.js). A prompt's rows stay together in one chunk, so
+  // the per-prompt ordering the maps below rely on is unchanged.
   const [volumeResult, resultResult, competitorResult] = await Promise.all([
-    supabaseAdmin.from('prompt_volumes').select('*').in('prompt_id', promptIds),
-    supabaseAdmin
-      .from('prompt_results')
-      .select(
-        'prompt_id, visibility_score, mention_count, citation_count, sentiment, competitor_mentions',
-      )
-      .in('prompt_id', promptIds)
-      .order('created_at', { ascending: false }),
+    selectInChunks(promptIds, (chunk) =>
+      supabaseAdmin.from('prompt_volumes').select('*').in('prompt_id', chunk),
+    ),
+    selectInChunks(promptIds, (chunk) =>
+      supabaseAdmin
+        .from('prompt_results')
+        .select(
+          'prompt_id, visibility_score, mention_count, citation_count, sentiment, competitor_mentions',
+        )
+        .in('prompt_id', chunk)
+        .order('created_at', { ascending: false }),
+    ),
     supabaseAdmin.from('competitors').select('id, name, domain').eq('brand_id', brandId),
   ]);
 

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { resolveModel } from './ai-provider.js';
 import { getLanguageName } from './languages.js';
 import supabaseAdmin from '../config/supabase.js';
+import { selectInChunks } from './chunked-in.js';
 import { logger } from './logger.js';
 import { OPPORTUNITIES_PER_RUN, OPPORTUNITY_COUNT_RULE } from './opportunity-limits.js';
 
@@ -94,13 +95,21 @@ export async function generateContentOpportunities(brandId) {
 
   const promptIds = prompts.map((p) => p.id);
 
+  // Both prompt-keyed filters are chunked: a large brand puts hundreds of
+  // uuids in one query string, which is the request size the edge starts
+  // rejecting (see lib/chunked-in.js). Grouping below still works, because a
+  // prompt's rows all come from the same chunk and keep their order.
   const [volRes, resRes, compRes] = await Promise.all([
-    supabaseAdmin.from('prompt_volumes').select('*').in('prompt_id', promptIds),
-    supabaseAdmin
-      .from('prompt_results')
-      .select('prompt_id, visibility_score, competitor_mentions')
-      .in('prompt_id', promptIds)
-      .order('created_at', { ascending: false }),
+    selectInChunks(promptIds, (chunk) =>
+      supabaseAdmin.from('prompt_volumes').select('*').in('prompt_id', chunk),
+    ),
+    selectInChunks(promptIds, (chunk) =>
+      supabaseAdmin
+        .from('prompt_results')
+        .select('prompt_id, visibility_score, competitor_mentions')
+        .in('prompt_id', chunk)
+        .order('created_at', { ascending: false }),
+    ),
     supabaseAdmin.from('competitors').select('name').eq('brand_id', brandId),
   ]);
 

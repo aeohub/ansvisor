@@ -256,7 +256,12 @@ export async function getPromptVolumes(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Server error: ${res.status}`);
+    // The server sends the cause in `details`; dropping it is why a failing
+    // volumes query reached the logs as a bare "Failed to fetch volumes" and
+    // took a database-log reconstruction to identify.
+    throw new Error(
+      [body.error || `Server error: ${res.status}`, body.details].filter(Boolean).join(': '),
+    );
   }
 
   const data = await res.json();
