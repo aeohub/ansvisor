@@ -9,8 +9,11 @@ describe('topic prompt examples', () => {
     const schema = source.match(
       /const topicPromptSchema[\s\S]*?prompts: z\.array\(z\.string\(\)\.min\((\d+)\)\.max\((\d+)\)/,
     );
+    expect(schema).not.toBeNull();
     const bounds = { min: Number(schema[1]), max: Number(schema[2]) };
-    const examples = source.match(/e\.g\. "([^"]+)" or "([^"]+)"/).slice(1);
+    const rule = source.match(/- Write them like real quick searches, e\.g\. ([^\n]+)$/m);
+    expect(rule).not.toBeNull();
+    const examples = [...rule[1].matchAll(/"([^"]+)"/g)].map(([, example]) => example);
     const currentYear = String(new Date().getFullYear());
     const resolvedExamples = examples.map((example) =>
       example.replace('${new Date().getFullYear()}', currentYear),
