@@ -630,7 +630,7 @@ router.post('/from-topics', async (req, res) => {
 
 RULES:
 - Keep prompts SHORT and concise — between 30 and 100 characters. Aim for 40-80 characters.
-- Write them like real quick searches, e.g. "best CRM for small business" or "top email marketing tools ${new Date().getFullYear()}".
+- Write them like real quick searches, e.g. "best CRM software for growing small businesses" or "top email marketing tools for startups in ${new Date().getFullYear()}".
 - Do NOT use the brand name "${brandName}" in the prompts.
 - Each prompt should be relevant to the specific topic it belongs to.
 - Focus on queries where the brand could organically appear in AI-generated answers.
